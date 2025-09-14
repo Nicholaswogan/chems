@@ -15,7 +15,7 @@ import emcee
 import corner
 import math
 import warnings
-from multiprocessing.pool import Pool
+from multiprocessing.pool import ThreadPool
 from multiprocessing import get_start_method
 from multiprocessing import get_context
 from numba import jit
@@ -2163,7 +2163,7 @@ print('')
 
 
 #--------------------------------------------------------------------------------------------------------
-@jit(nopython=True)
+@jit(nopython=True, nogil=True)
 def model_jit(theta, T_max, numvar, mol_wts, Mplanet_Mearth):
     y_model = np.zeros(numvar)
     P=theta[29]
@@ -2339,8 +2339,7 @@ p0=[(theta)+ranoffset*np.random.randn(n) for i in range(nwalkers)]  #+1.0e-9*np.
 # DEFINE A FUNCTION THAT RUNS MCMC SEARCH.  Start by instantiating the EnsembleSampler.
 # for emcee.
 def main(p0,nwalkers,niter,n,lnprob,data):
-    ctx = get_context('fork')
-    with Pool(6,context=ctx) as pool:
+    with ThreadPool(6) as pool:
         sampler = emcee.EnsembleSampler(nwalkers, n, lnprob, args=data, pool=pool)
     
         print("Initial burn in running...")
