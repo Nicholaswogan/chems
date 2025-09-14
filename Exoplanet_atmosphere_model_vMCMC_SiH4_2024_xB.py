@@ -18,6 +18,7 @@ import warnings
 from multiprocessing.pool import Pool
 from multiprocessing import get_start_method
 from multiprocessing import get_context
+from numba import jit
 
 print(" ")
 print(" ")
@@ -2162,13 +2163,14 @@ print('')
 
 
 #--------------------------------------------------------------------------------------------------------
-# Our model function
-def model(theta):
+@jit(nopython=True)
+def model_jit(theta, T_max, numvar, mol_wts, Mplanet_Mearth):
+    y_model = np.zeros(numvar)
     P=theta[29]
     Pstd=1.0
     # Model natural log of equilibrium KDs (no pressures in these quotients)
     lngSi=-6.65*1873.0/T_max-(12.41*1873.0/T_max)*ln(1.0-theta[12])
-    lngSi=lngSi-((-5.0*1873.0/T_max)*theta[13]*(1.0+ln(1-theta[13])/theta[13]-1.0/(1.0-theta[12])))
+    lngSi=lngSi-((-5.0*1873.0/T_max)*theta[13]*(1.0+ln(1.0-theta[13])/theta[13]-1.0/(1.0-theta[12])))
     lngSi=lngSi+(-5.0*1873.0/T_max)*theta[13]**2.0*theta[12]*(1.0/(1.0-theta[12])+1.0/(1.0-theta[13])+theta[12]/(2.0*(1.0-theta[12])**2.0)-1.0)
     lngO=(4.29-16500.0/T_max)-(-1.0*1873.0/T_max)*ln(1.0-theta[13])
     lngO=lngO-((-5.0*1873.0/T_max)*theta[12]*(1.0+ln(1-theta[12])/theta[12]-1.0/(1.0-theta[13])))
@@ -2255,12 +2257,15 @@ def model(theta):
     y_model[29]=100.0*(P_guess-theta[29])/P_guess #Added a multiplier here to force better pressure solutions
     
     return y_model
+
+def model(theta, T_max, numvar, mol_wts, Mplanet_Mearth):
+    return model_jit(theta, T_max, numvar, mol_wts, Mplanet_Mearth)
 #--------------------------------------------------------------------------------------------------------
 # DEFINE LIKELIHOOD FUNCTION, making use of model function above.
 # Notice by using the sum, this is the logarithm of the likelihood probability.
 # The total probability would be the product of exponentials of the square differences etc.
-def lnlike(theta,y,yerr):
-    y_model=model(theta)
+def lnlike(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
+    y_model=model(theta, T_max, numvar, mol_wts, Mplanet_Mearth)
     diffs=((y-y_model)**2.0)/yerr**2.0
     lnlike=-0.5*sum(diffs)
     return lnlike
@@ -2293,11 +2298,11 @@ def lnprior(theta):
 # We add the output from the functions above because they return logs of
 # probabilities. If outside of priors, return infinitely bad probability
 # as -inf since this would be the log of a very tiny number.
-def lnprob(theta,y,yerr):
+def lnprob(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
     lp=lnprior(theta)
     if lp == -np.inf:
         return -np.inf
-    like=lnlike(theta,y,yerr)
+    like=lnlike(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth)
     if math.isnan(like):
         return -np.inf
     return lp+like
@@ -2305,10 +2310,10 @@ def lnprob(theta,y,yerr):
 # Make a tuple with the data to be used by emcee, this will be a list of
 # arguments that tells emcee the list required to call the probability function,
 # so this should match the lnprob argument list
-data = (y,yerr)
+data = (y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth)
 
 # Print current model (not parameters) before starting MCMC
-print('y(current model)= \n',model(soln.x))
+print('y(current model)= \n',model(soln.x, T_max, numvar, mol_wts, Mplanet_Mearth))
 print('')
 print('yerr(errors for model)= \n ',yerr)
 print('')
@@ -2372,7 +2377,7 @@ print('sampler.flatlnprobability shape = ',np.shape(posteriors))
 result=samples[np.argmax(sampler.flatlnprobability)]
 
 # Best-fit final model consisting of equilibrium constants, total moles of components, and mole fraction sums
-best_fit_model = model(result)
+best_fit_model = model(result, T_max, numvar, mol_wts, Mplanet_Mearth)
 
 # Calculate goodness of fit for this best-fit model
 chi_square=sum(((y-best_fit_model)**2.0)/yerr**2.0)
