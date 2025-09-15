@@ -2298,12 +2298,13 @@ def lnprior(theta):
 # We add the output from the functions above because they return logs of
 # probabilities. If outside of priors, return infinitely bad probability
 # as -inf since this would be the log of a very tiny number.
-def lnprob(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
+def lnprob(log_theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
+    theta = 10.**log_theta
     lp=lnprior(theta)
     if lp == -np.inf:
         return -np.inf
     like=lnlike(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth)
-    if math.isnan(like):
+    if math.isnan(like) or np.isinf(like):
         return -np.inf
     return lp+like
 #--------------------------------------------------------------------------------------------------------
@@ -2334,7 +2335,9 @@ niter_eff = int(niter/thin) # emcee does niter*thin iteractions, so correct for 
 # "Initial state has a large condition number" is returned from emcee, indicating
 # walkers are not sufficiently independent.
 n=numvar
-p0=[(theta)+ranoffset*np.random.randn(n) for i in range(nwalkers)]  #+1.0e-9*np.random.randn(n)
+# Ensure theta values are positive before taking log10
+theta_log = np.log10(np.maximum(theta, 1e-30))
+p0=[(theta_log)+ranoffset*np.random.randn(n) for i in range(nwalkers)]
 
 # DEFINE A FUNCTION THAT RUNS MCMC SEARCH.  Start by instantiating the EnsembleSampler.
 # for emcee.
@@ -2373,7 +2376,7 @@ print('sampler.flatlnprobability shape = ',np.shape(posteriors))
 
 # Select as your best set of parameters theta in the sampler that has the greatest posterior probability
 # by interrogating the ln probability for each sample, also concatenated from all walkers
-result=samples[np.argmax(sampler.flatlnprobability)]
+result=10.**samples[np.argmax(sampler.flatlnprobability)]
 
 # Best-fit final model consisting of equilibrium constants, total moles of components, and mole fraction sums
 best_fit_model = model(result, T_max, numvar, mol_wts, Mplanet_Mearth)
