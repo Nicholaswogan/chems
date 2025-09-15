@@ -14,6 +14,7 @@ import os
 import dynesty
 import math
 import warnings
+from multiprocessing.pool import ThreadPool
 from numba import jit
 
 print(" ")
@@ -2294,14 +2295,19 @@ print('')
 nlive = 200 # number of live points, similar to nwalkers
 n=numvar
 
-# Instantiate the NestedSampler
-# The user requested a non-parallel run, so no pool is used.
-sampler = dynesty.NestedSampler(lnlike, prior_transform, ndim=n,
-                                logl_args=data, nlive=nlive)
+# Set up the thread pool
+nthreads = os.cpu_count()
+print(f"Using {nthreads} threads for parallelization.")
 
-print("Running dynesty nested sampler...")
-sampler.run_nested()
-results = sampler.results
+with ThreadPool(nthreads) as pool:
+    # Instantiate the NestedSampler with the pool
+    sampler = dynesty.NestedSampler(lnlike, prior_transform, ndim=n,
+                                    logl_args=data, nlive=nlive,
+                                    pool=pool, queue_size=nthreads)
+
+    print("Running dynesty nested sampler in parallel...")
+    sampler.run_nested()
+    results = sampler.results
 print('')
 print('...dynesty search completed.')
 # EXPLORE results...
