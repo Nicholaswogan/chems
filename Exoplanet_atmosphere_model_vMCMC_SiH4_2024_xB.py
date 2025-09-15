@@ -11,13 +11,9 @@ from random import uniform, randint
 from statistics import mean, stdev
 import time
 import os
-import emcee
-import corner
+import dynesty
 import math
 import warnings
-from multiprocessing.pool import ThreadPool
-from multiprocessing import get_start_method
-from multiprocessing import get_context
 from numba import jit
 
 print(" ")
@@ -2264,53 +2260,28 @@ def model(theta, T_max, numvar, mol_wts, Mplanet_Mearth):
 # DEFINE LIKELIHOOD FUNCTION, making use of model function above.
 # Notice by using the sum, this is the logarithm of the likelihood probability.
 # The total probability would be the product of exponentials of the square differences etc.
-def lnlike(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
+def lnlike(log_theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
+    theta = 10.**log_theta
     y_model=model(theta, T_max, numvar, mol_wts, Mplanet_Mearth)
     diffs=((y-y_model)**2.0)/yerr**2.0
     lnlike=-0.5*sum(diffs)
     return lnlike
 #--------------------------------------------------------------------------------------------------------
-# DEFINE PRIORS using simple square function for each variable
-# This function output is prescribed by what emcee uses for the prior
-# probabilities, e.g., 0 for in range, -infinity if out the range for the priors.
-# Formulated this way, these are uninformative priors.
-def lnprior(theta):
-    # Priors on mole fractions require them to be between 0 and 1 else ln(probability) is -infinity
-    # This structure relies on first encountered return applies
-    for i in range(0,25):
-        if theta[i] < 0.0:
-            return -np.inf
-        if theta[i] > 1.00:
-            return -np.inf
-    # Special prior for water in melt using aH2O = xB^2
-    #if theta[8] > 0.40:
-    #    return -np.inf
-    # Priors for moles of phases, must be positive
-    if theta[26] < 0.0:
-        return -np.inf
-    if theta[27] < 0.0:
-        return -np.inf
-    if theta[28] < 0.0:
-        return -np.inf
-    return 0.0
+# DEFINE PRIOR TRANSFORM for dynesty.
+# This function takes a vector of random numbers from a unit cube and
+# transforms them to the parameter space.
+def prior_transform(u):
+    """Transforms the unit cube to the prior volume in log10 space."""
+    log_theta = np.array(u)
+    for i in range(numvar):
+        # Ensure bounds are positive before taking log10
+        lower_bound = np.log10(np.maximum(bounds[i, 0], 1e-30))
+        upper_bound = np.log10(np.maximum(bounds[i, 1], 1e-30))
+        log_theta[i] = u[i] * (upper_bound - lower_bound) + lower_bound
+    return log_theta
 #--------------------------------------------------------------------------------------------------------
-# POSTERIOR PROBABILITIES as product of likelihood and priors (i.e., sum of logs).
-# We add the output from the functions above because they return logs of
-# probabilities. If outside of priors, return infinitely bad probability
-# as -inf since this would be the log of a very tiny number.
-def lnprob(log_theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth):
-    theta = 10.**log_theta
-    lp=lnprior(theta)
-    if lp == -np.inf:
-        return -np.inf
-    like=lnlike(theta, y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth)
-    if math.isnan(like) or np.isinf(like):
-        return -np.inf
-    return lp+like
-#--------------------------------------------------------------------------------------------------------
-# Make a tuple with the data to be used by emcee, this will be a list of
-# arguments that tells emcee the list required to call the probability function,
-# so this should match the lnprob argument list
+# Make a tuple with the data to be used by dynesty, this will be a list of
+# arguments that tells dynesty the list required to call the log-likelihood function.
 data = (y, yerr, T_max, numvar, mol_wts, Mplanet_Mearth)
 
 # Print current model (not parameters) before starting MCMC
@@ -2319,64 +2290,34 @@ print('')
 print('yerr(errors for model)= \n ',yerr)
 print('')
 
-# INPUT MCMC PARAMETERS: Set number of independent Markov chain walkers and iterations
-nwalkers=200 #100
-
-# Utilize thin for emcee to return every thin'th sample, add thin_by=thin to smapler.run_mcmc options
-thin=10
-niter=1000000 #2000000 works
-niter_eff = int(niter/thin) # emcee does niter*thin iteractions, so correct for this to save time if using thin
-        
-# p0 is the array of initial positions for each walker, i.e., each separate
-# Markov chain operating slightly displaced at random from one another.
-# The code below creates an array of arrays with slightly purturbed locations
-# in parameter space based on random draws from a multivariate Gaussian for
-# these variables. Increase the prefix multiplier for random position offsets if the error
-# "Initial state has a large condition number" is returned from emcee, indicating
-# walkers are not sufficiently independent.
+# INPUT DYNESTY PARAMETERS
+nlive = 200 # number of live points, similar to nwalkers
 n=numvar
-# Ensure theta values are positive before taking log10
-theta_log = np.log10(np.maximum(theta, 1e-30))
-p0=[(theta_log)+ranoffset*np.random.randn(n) for i in range(nwalkers)]
 
-# DEFINE A FUNCTION THAT RUNS MCMC SEARCH.  Start by instantiating the EnsembleSampler.
-# for emcee.
-def main(p0,nwalkers,niter,n,lnprob,data):
-    with ThreadPool(6) as pool:
-        sampler = emcee.EnsembleSampler(nwalkers, n, lnprob, args=data, pool=pool)
-    
-        print("Initial burn in running...")
-        pos,_, _ = sampler.run_mcmc(p0,500)  # initial run, save position (i.e., model parameters)
-    
-        sampler.reset()  # reset results from sampler for actual search
-    
-        print("Running full MCMC search...")
-        pos, prob, state = sampler.run_mcmc(pos, niter_eff, skip_initial_state_check=False, progress=True, thin_by=thin) # run actual search starting at burn-in position
-    
-    return sampler, pos, prob, state
+# Instantiate the NestedSampler
+# The user requested a non-parallel run, so no pool is used.
+sampler = dynesty.NestedSampler(lnlike, prior_transform, ndim=n,
+                                logl_args=data, nlive=nlive)
 
-# RUN THE SEARCH....this one line of code initiates the search
-sampler, pos, prob, state = main(p0,nwalkers,niter,n,lnprob,data)
+print("Running dynesty nested sampler...")
+sampler.run_nested()
+results = sampler.results
 print('')
-print('...MCMC search completed.')
+print('...dynesty search completed.')
 # EXPLORE results...
-#position contains the parameter position (i.e, values) for each walker at the end of search
-#print("Position of each sampler = ",pos)
-
-# Concatenate all walker results into a single chain, array is (nwalkers*iterations x n(variables))
-# or said another way, each row is a test position, each column is a variable.
-samples=sampler.flatchain
-posteriors=sampler.flatlnprobability
+# Extract samples and log-likelihood from dynesty results
+samples = results.samples
+logl = results.logl
 
 print('memory required for chain = ', samples.size * samples.itemsize)
 
 # Find dimensions of the returned data for the chains
-print('sampler.flatchain shape = ',np.shape(samples))
-print('sampler.flatlnprobability shape = ',np.shape(posteriors))
+print('samples shape = ',np.shape(samples))
+print('logl shape = ',np.shape(logl))
 
-# Select as your best set of parameters theta in the sampler that has the greatest posterior probability
-# by interrogating the ln probability for each sample, also concatenated from all walkers
-result=10.**samples[np.argmax(sampler.flatlnprobability)]
+# Select as your best set of parameters theta in the sampler that has the greatest log-likelihood
+best_idx = np.argmax(logl)
+result = 10.**(samples[best_idx])
 
 # Best-fit final model consisting of equilibrium constants, total moles of components, and mole fraction sums
 best_fit_model = model(result, T_max, numvar, mol_wts, Mplanet_Mearth)
